@@ -1,0 +1,26 @@
+Task Completed: Server Cleanup
+------------------------------
+Date: 2024-02-17
+
+Actions Performed:
+1. Connected to 36.88.105.236 as unira5.
+2. Elevated to root privileges.
+3. Cleaned Journal Logs:
+   - Command: journalctl --vacuum-time=2d
+   - Result: Reclaimed approx 2.2GB of space from /var/log/journal.
+4. Cleaned APT Cache:
+   - Command: apt-get clean
+   - Result: Reclaimed approx 600MB.
+5. Removed Unused Packages:
+   - Command: apt-get autoremove -y
+   - Result: Removed php8.2 packages and freed ~1.3MB.
+6. Suspicious File Removal:
+   - Searched for 'WinboxExploit.py' and 'extract_user.py' in /tmp and removed them.
+   - Scanned /home/unira5 and /tmp for text files matching 'pass', 'brute', 'result'. None were found during the final scan.
+
+Current Status:
+- /var/log usage: Reduced to ~376MB.
+- /var/cache/apt/archives usage: 16K.
+- Root filesystem usage: 7.8GB used (1%).
+
+Note: No code changes were committed to the repository as this was an operational task.
