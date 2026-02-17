@@ -4,251 +4,369 @@ import sqlite3
 import os
 import html
 import datetime
+import json
+import urllib.parse
 
 PORT = 7890
 DB_NAME = "monitor.db"
 
 class MonitorHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
+        # Serve main HTML page
         if self.path == '/':
-            self.send_response(200)
-            self.send_header('Content-type', 'text/html')
-            self.end_headers()
+            self.serve_html()
+            return
 
-            # Fetch stats
-            rows = []
-            has_advanced = False
-            scan_stats = {}
+        # API: Stats
+        if self.path == '/api/stats':
+            self.serve_json(self.get_stats())
+            return
 
+        # API: Results with Pagination
+        if self.path.startswith('/api/results'):
+            query = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(query)
+            page = int(params.get('page', [1])[0])
+            limit = int(params.get('limit', [10])[0])
+            self.serve_json(self.get_results(page, limit))
+            return
+
+        # API: Settings
+        if self.path == '/api/settings':
+            self.serve_json(self.get_settings())
+            return
+
+        self.send_error(404, "Not Found")
+
+    def do_POST(self):
+        if self.path == '/api/settings':
+            content_length = int(self.headers['Content-Length'])
+            post_data = self.rfile.read(content_length).decode('utf-8')
             try:
-                conn = sqlite3.connect(DB_NAME)
-                c = conn.cursor()
-
-                # Check for columns
-                c.execute("PRAGMA table_info(scan_results)")
-                columns = [col[1] for col in c.fetchall()]
-                has_advanced = 'service' in columns and 'risk' in columns
-
-                # Get Results
-                query = "SELECT * FROM scan_results ORDER BY timestamp DESC"
-                c.execute(query)
-                rows = c.fetchall()
-
-                # Get Scan Stats
-                try:
-                    c.execute("SELECT key, value FROM scan_stats")
-                    for k, v in c.fetchall():
-                        scan_stats[k] = v
-                except:
-                    pass
-
-                conn.close()
+                data = json.loads(post_data)
+                self.update_settings(data)
+                self.serve_json({"status": "ok", "message": "Settings updated"})
             except Exception as e:
-                print(f"DB Error: {e}")
+                self.send_error(400, f"Bad Request: {e}")
+            return
 
-            # Calculate stats
-            total_open = len(rows)
-            high_risk = 0
-            if has_advanced:
-                for row in rows:
-                    if len(row) > 5 and row[5] == "High": # risk is index 5
-                        high_risk += 1
+        self.send_error(404, "Not Found")
 
-            # Defaults
-            scan_speed = scan_stats.get("scan_speed", "0 ports/sec")
-            status = scan_stats.get("status", "Idle")
-            progress = scan_stats.get("progress", "0/0")
+    def serve_html(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/html')
+        self.end_headers()
 
-            status_badge = "bg-secondary"
-            if status == "Scanning": status_badge = "bg-primary"
-            elif status == "Analyzing": status_badge = "bg-warning text-dark"
-            elif status == "Completed": status_badge = "bg-success"
+        with open("monitor_dashboard.html", "r") as f:
+            self.wfile.write(f.read().encode())
 
-            page_content = f"""
-            <!DOCTYPE html>
-            <html lang="en">
-            <head>
-                <meta charset="UTF-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <title>Server Monitor Dashboard</title>
-                <!-- Bootstrap 5 -->
-                <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-                <!-- FontAwesome -->
-                <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
-                <style>
-                    body {{ background-color: #f4f6f9; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }}
-                    .navbar {{ box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
-                    .card {{ border: none; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); transition: transform 0.2s; }}
-                    .card:hover {{ transform: translateY(-5px); }}
-                    .card-icon {{ font-size: 2.5rem; opacity: 0.8; }}
-                    .table-responsive {{ border-radius: 10px; overflow: hidden; background: white; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }}
-                    .table thead th {{ background-color: #2c3e50; color: white; border: none; }}
-                    .badge-risk-high {{ background-color: #e74c3c; color: white; }}
-                    .badge-risk-medium {{ background-color: #f39c12; color: white; }}
-                    .badge-risk-low {{ background-color: #27ae60; color: white; }}
-                    .status-indicator {{ width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 5px; }}
-                </style>
-                <meta http-equiv="refresh" content="5">
-            </head>
-            <body>
-                <nav class="navbar navbar-expand-lg navbar-dark bg-dark mb-4">
-                    <div class="container">
-                        <a class="navbar-brand" href="#"><i class="fas fa-server me-2"></i>NetMonitor Pro</a>
-                        <span class="navbar-text">
-                            <span class="badge {status_badge}">{status}</span>
-                        </span>
-                    </div>
-                </nav>
+    def serve_json(self, data):
+        self.send_response(200)
+        self.send_header('Content-type', 'application/json')
+        self.end_headers()
+        self.wfile.write(json.dumps(data).encode())
 
-                <div class="container">
+    def get_stats(self):
+        stats = {}
+        try:
+            conn = sqlite3.connect(DB_NAME)
+            c = conn.cursor()
 
-                    <!-- Stats Cards -->
-                    <div class="row g-4 mb-4">
-                        <div class="col-md-3">
-                            <div class="card h-100 border-start border-4 border-primary">
-                                <div class="card-body d-flex align-items-center justify-content-between">
-                                    <div>
-                                        <h6 class="text-muted text-uppercase mb-1">Total Open Ports</h6>
-                                        <h2 class="mb-0 fw-bold">{total_open}</h2>
-                                    </div>
-                                    <div class="text-primary card-icon"><i class="fas fa-network-wired"></i></div>
-                                </div>
-                            </div>
-                        </div>
-                        <div class="col-md-3">
-                            <div class="card h-100 border-start border-4 border-danger">
-                                <div class="card-body d-flex align-items-center justify-content-between">
-                                    <div>
-                                        <h6 class="text-muted text-uppercase mb-1">High Risk</h6>
-                                        <h2 class="mb-0 fw-bold">{high_risk}</h2>
-                                    </div>
-                                    <div class="text-danger card-icon"><i class="fas fa-shield-alt"></i></div>
-                                </div>
-                            </div>
-                        </div>
-                        <div class="col-md-3">
-                            <div class="card h-100 border-start border-4 border-info">
-                                <div class="card-body d-flex align-items-center justify-content-between">
-                                    <div>
-                                        <h6 class="text-muted text-uppercase mb-1">Scan Speed</h6>
-                                        <h4 class="mb-0 fw-bold">{scan_speed}</h4>
-                                    </div>
-                                    <div class="text-info card-icon"><i class="fas fa-tachometer-alt"></i></div>
-                                </div>
-                            </div>
-                        </div>
-                        <div class="col-md-3">
-                            <div class="card h-100 border-start border-4 border-success">
-                                <div class="card-body d-flex align-items-center justify-content-between">
-                                    <div>
-                                        <h6 class="text-muted text-uppercase mb-1">Progress</h6>
-                                        <h4 class="mb-0 fw-bold">{progress}</h4>
-                                    </div>
-                                    <div class="text-success card-icon"><i class="fas fa-tasks"></i></div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
+            # Scan Stats
+            c.execute("SELECT key, value FROM scan_stats")
+            for k, v in c.fetchall():
+                stats[k] = v
 
-                    <!-- Main Table -->
-                    <div class="card mb-4">
-                        <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center">
-                            <h5 class="m-0 fw-bold text-dark"><i class="fas fa-list me-2"></i>Active Scan Results</h5>
-                            <small class="text-muted">Target: 36.88.105.236 | Last Update: {datetime.datetime.now().strftime("%H:%M:%S")}</small>
-                        </div>
-                        <div class="card-body p-0">
-                            <div class="table-responsive">
-                                <table class="table table-striped table-hover mb-0 align-middle">
-                                    <thead>
-                                        <tr>
-                                            <th class="ps-4">Port</th>
-                                            <th>Service</th>
-                                            <th>Risk Level</th>
-                                            <th>Banner Information</th>
-                                            <th>Detected At</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-            """
+            # Total Open Ports
+            c.execute("SELECT COUNT(*) FROM scan_results")
+            stats['total_open'] = c.fetchone()[0]
 
-            if not rows:
-                 page_content += "<tr><td colspan='5' class='text-center py-5 text-muted'><i class='fas fa-spinner fa-spin fa-2x mb-3'></i><p>Waiting for scan data...</p></td></tr>"
-            else:
-                for row in rows:
-                    port = row[2]
-                    # Safe fallbacks for schema evolution
-                    banner_raw = row[3] if len(row) > 3 else ""
-                    banner = html.escape(str(banner_raw)) if banner_raw else "<span class='text-muted'>No banner</span>"
-                    timestamp = row[6] if len(row) > 6 else (row[4] if len(row) > 4 else "")
+            # High Risk Count
+            c.execute("SELECT COUNT(*) FROM scan_results WHERE risk='High'")
+            stats['high_risk'] = c.fetchone()[0]
 
-                    service = "Unknown"
-                    risk_html = '<span class="badge bg-secondary">Unknown</span>'
+            conn.close()
+        except:
+            pass
+        return stats
 
-                    if has_advanced and len(row) > 5:
-                        service = html.escape(str(row[4])) if row[4] else "Unknown"
-                        risk_val = str(row[5]) if row[5] else "Unknown"
+    def get_results(self, page, limit):
+        offset = (page - 1) * limit
+        results = []
+        try:
+            conn = sqlite3.connect(DB_NAME)
+            c = conn.cursor()
 
-                        badge_class = "bg-secondary"
-                        icon = ""
-                        if risk_val == "High":
-                            badge_class = "badge-risk-high"
-                            icon = "<i class='fas fa-exclamation-triangle me-1'></i>"
-                        elif risk_val == "Medium":
-                            badge_class = "badge-risk-medium"
-                            icon = "<i class='fas fa-exclamation-circle me-1'></i>"
-                        elif risk_val == "Low":
-                            badge_class = "badge-risk-low"
-                            icon = "<i class='fas fa-check-circle me-1'></i>"
+            # Get data
+            c.execute(f"SELECT ip, port, banner, service, risk, timestamp FROM scan_results ORDER BY timestamp DESC LIMIT {limit} OFFSET {offset}")
+            rows = c.fetchall()
 
-                        risk_html = f'<span class="badge {badge_class}">{icon}{risk_val}</span>'
+            for row in rows:
+                results.append({
+                    "ip": row[0],
+                    "port": row[1],
+                    "banner": row[2],
+                    "service": row[3],
+                    "risk": row[4],
+                    "timestamp": row[5]
+                })
 
-                    # Icon for service
-                    service_icon = "fa-question-circle"
-                    if "SSH" in service: service_icon = "fa-terminal"
-                    elif "HTTP" in service: service_icon = "fa-globe"
-                    elif "FTP" in service: service_icon = "fa-file-transfer"
-                    elif "Database" in service or "SQL" in service: service_icon = "fa-database"
+            conn.close()
+        except Exception as e:
+            print(f"DB Error results: {e}")
+        return results
 
-                    page_content += f"""
-                        <tr>
-                            <td class="ps-4 fw-bold">{port}</td>
-                            <td><i class="fas {service_icon} text-muted me-2"></i>{service}</td>
-                            <td>{risk_html}</td>
-                            <td><small class="text-secondary font-monospace">{banner[:60]}{'...' if len(banner)>60 else ''}</small></td>
-                            <td><small class="text-muted">{timestamp}</small></td>
-                        </tr>
-                    """
+    def get_settings(self):
+        settings = {}
+        try:
+            conn = sqlite3.connect(DB_NAME)
+            c = conn.cursor()
+            c.execute("SELECT key, value FROM settings")
+            for k, v in c.fetchall():
+                settings[k] = v
+            conn.close()
+        except:
+            pass
+        return settings
 
-            page_content += """
-                                    </tbody>
-                                </table>
-                            </div>
-                        </div>
-                    </div>
-
-                    <footer class="text-center text-muted py-4">
-                        <small>&copy; 2026 NetMonitor Pro. Secured & Optimized.</small>
-                    </footer>
-                </div>
-
-                <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-            </body>
-            </html>
-            """
-
-            self.wfile.write(page_content.encode())
-        else:
-            self.send_error(404, "File Not Found: %s" % self.path)
+    def update_settings(self, data):
+        try:
+            conn = sqlite3.connect(DB_NAME)
+            c = conn.cursor()
+            for k, v in data.items():
+                if k in ['target_ip', 'max_workers', 'ports']:
+                    c.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (k, str(v)))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"DB Update Error: {e}")
 
 def run_server():
+    # Ensure HTML template exists (creating inline for simplicity in deployment)
+    create_html_template()
+
     socketserver.TCPServer.allow_reuse_address = True
     with socketserver.TCPServer(("", PORT), MonitorHandler) as httpd:
-        print(f"Serving professional dashboard at http://0.0.0.0:{PORT}")
+        print(f"Serving API dashboard at http://0.0.0.0:{PORT}")
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:
             pass
         httpd.server_close()
+
+def create_html_template():
+    html_content = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NetMonitor Pro - Realtime</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #f4f6f9; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        .card { border: none; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
+        .badge-risk-high { background-color: #e74c3c; }
+        .badge-risk-medium { background-color: #f39c12; }
+        .badge-risk-low { background-color: #27ae60; }
+        .pagination { cursor: pointer; }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark mb-4">
+        <div class="container">
+            <a class="navbar-brand" href="#"><i class="fas fa-server me-2"></i>NetMonitor Pro</a>
+            <button class="btn btn-outline-light btn-sm" data-bs-toggle="modal" data-bs-target="#settingsModal">
+                <i class="fas fa-cog"></i> Settings
+            </button>
+        </div>
+    </nav>
+
+    <div class="container">
+        <!-- Stats -->
+        <div class="row g-4 mb-4">
+            <div class="col-md-3">
+                <div class="card h-100 border-start border-4 border-primary p-3">
+                    <h6 class="text-muted text-uppercase">Total Open Ports</h6>
+                    <h2 class="mb-0 fw-bold" id="stat-total">0</h2>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card h-100 border-start border-4 border-danger p-3">
+                    <h6 class="text-muted text-uppercase">High Risk</h6>
+                    <h2 class="mb-0 fw-bold text-danger" id="stat-risk">0</h2>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card h-100 border-start border-4 border-info p-3">
+                    <h6 class="text-muted text-uppercase">Scan Speed</h6>
+                    <h4 class="mb-0 fw-bold" id="stat-speed">0 ports/sec</h4>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card h-100 border-start border-4 border-success p-3">
+                    <h6 class="text-muted text-uppercase">Progress</h6>
+                    <h4 class="mb-0 fw-bold" id="stat-progress">0/0</h4>
+                </div>
+            </div>
+        </div>
+
+        <!-- Table -->
+        <div class="card mb-4">
+            <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center">
+                <h5 class="m-0 fw-bold"><i class="fas fa-list me-2"></i>Active Results</h5>
+                <div>
+                    <button class="btn btn-sm btn-secondary" onclick="prevPage()"><i class="fas fa-chevron-left"></i></button>
+                    <span class="mx-2" id="page-indicator">Page 1</span>
+                    <button class="btn btn-sm btn-secondary" onclick="nextPage()"><i class="fas fa-chevron-right"></i></button>
+                </div>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-striped table-hover mb-0 align-middle">
+                        <thead>
+                            <tr>
+                                <th class="ps-4">Port</th>
+                                <th>Service</th>
+                                <th>Risk</th>
+                                <th>Banner</th>
+                                <th>Last Seen</th>
+                            </tr>
+                        </thead>
+                        <tbody id="results-body">
+                            <!-- JS fills this -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div class="modal fade" id="settingsModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Scanner Settings</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="settingsForm">
+                        <div class="mb-3">
+                            <label class="form-label">Target IP</label>
+                            <input type="text" class="form-control" id="setting-ip" name="target_ip">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Max Threads</label>
+                            <input type="number" class="form-control" id="setting-threads" name="max_workers">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Ports (comma separated)</label>
+                            <textarea class="form-control" id="setting-ports" name="ports" rows="3"></textarea>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                    <button type="button" class="btn btn-primary" onclick="saveSettings()">Save Changes</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        let currentPage = 1;
+        const limit = 10;
+
+        async function fetchStats() {
+            try {
+                const res = await fetch('/api/stats');
+                const data = await res.json();
+                document.getElementById('stat-total').innerText = data.total_open || 0;
+                document.getElementById('stat-risk').innerText = data.high_risk || 0;
+                document.getElementById('stat-speed').innerText = (data.scan_speed || 0) + ' ports/sec';
+                document.getElementById('stat-progress').innerText = data.progress || '0/0';
+            } catch (e) { console.error(e); }
+        }
+
+        async function fetchResults() {
+            try {
+                const res = await fetch(`/api/results?page=${currentPage}&limit=${limit}`);
+                const data = await res.json();
+                const tbody = document.getElementById('results-body');
+                tbody.innerHTML = '';
+
+                if (data.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="5" class="text-center py-4">No results found on this page.</td></tr>';
+                    return;
+                }
+
+                data.forEach(row => {
+                    let riskBadge = 'bg-secondary';
+                    if (row.risk === 'High') riskBadge = 'badge-risk-high';
+                    if (row.risk === 'Medium') riskBadge = 'badge-risk-medium';
+                    if (row.risk === 'Low') riskBadge = 'badge-risk-low';
+
+                    const tr = `
+                        <tr>
+                            <td class="ps-4 fw-bold">${row.port}</td>
+                            <td>${row.service || 'Unknown'}</td>
+                            <td><span class="badge ${riskBadge}">${row.risk || 'Unknown'}</span></td>
+                            <td><small class="text-muted font-monospace">${(row.banner || '').substring(0, 50)}</small></td>
+                            <td><small>${row.timestamp}</small></td>
+                        </tr>
+                    `;
+                    tbody.innerHTML += tr;
+                });
+                document.getElementById('page-indicator').innerText = `Page ${currentPage}`;
+            } catch (e) { console.error(e); }
+        }
+
+        async function loadSettings() {
+            const res = await fetch('/api/settings');
+            const data = await res.json();
+            document.getElementById('setting-ip').value = data.target_ip || '';
+            document.getElementById('setting-threads').value = data.max_workers || '';
+            document.getElementById('setting-ports').value = data.ports || '';
+        }
+
+        async function saveSettings() {
+            const data = {
+                target_ip: document.getElementById('setting-ip').value,
+                max_workers: document.getElementById('setting-threads').value,
+                ports: document.getElementById('setting-ports').value
+            };
+
+            await fetch('/api/settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
+
+            const modal = bootstrap.Modal.getInstance(document.getElementById('settingsModal'));
+            modal.hide();
+            alert('Settings saved. Scanner will update on next cycle.');
+        }
+
+        function nextPage() { currentPage++; fetchResults(); }
+        function prevPage() { if (currentPage > 1) currentPage--; fetchResults(); }
+
+        // Initial Load
+        loadSettings();
+        fetchStats();
+        fetchResults();
+
+        // Real-time polling
+        setInterval(fetchStats, 2000);
+        setInterval(fetchResults, 5000);
+    </script>
+</body>
+</html>
+    """
+    with open("monitor_dashboard.html", "w") as f:
+        f.write(html_content)
 
 if __name__ == "__main__":
     run_server()
