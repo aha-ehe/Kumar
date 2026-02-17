@@ -20,14 +20,16 @@ COMMON_PORTS = [
     27019, 28017, 50000, 50030, 50060, 50070, 50075, 50090
 ]
 
-# Shared Queue
+# Shared Queue and Counters
 scan_queue = queue.Queue()
+ports_scanned = 0
+start_time = 0
 
 # Database Setup
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    # Check if table exists
+    # Check if scan_results table exists
     c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='scan_results'")
     if c.fetchone() is None:
         c.execute('''CREATE TABLE scan_results
@@ -47,6 +49,14 @@ def init_db():
         if 'risk' not in columns:
             c.execute("ALTER TABLE scan_results ADD COLUMN risk TEXT")
 
+    # Check if scan_stats table exists
+    c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='scan_stats'")
+    if c.fetchone() is None:
+        c.execute('''CREATE TABLE scan_stats
+                     (key TEXT PRIMARY KEY,
+                      value TEXT,
+                      timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)''')
+
     conn.commit()
     conn.close()
 
@@ -57,6 +67,17 @@ def save_result(ip, port, banner, service, risk):
               (ip, port, banner, service, risk))
     conn.commit()
     conn.close()
+
+def update_stat(key, value):
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        c = conn.cursor()
+        c.execute("INSERT OR REPLACE INTO scan_stats (key, value, timestamp) VALUES (?, ?, datetime('now'))",
+                  (key, str(value)))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Error updating stat {key}: {e}")
 
 # Analysis Logic
 def identify_service(port, banner):
@@ -125,9 +146,18 @@ def scan_port(ip, port):
     return False
 
 def worker_scan(port):
+    global ports_scanned
     if scan_port(TARGET_IP, port):
         print(f"[+] Port {port} is OPEN on {TARGET_IP}")
         scan_queue.put((TARGET_IP, port))
+    ports_scanned += 1
+    # Update progress roughly every 10 ports to avoid DB lock contention
+    if ports_scanned % 10 == 0:
+        elapsed = time.time() - start_time
+        if elapsed > 0:
+            speed = int(ports_scanned / elapsed)
+            update_stat("scan_speed", f"{speed} ports/sec")
+            update_stat("progress", f"{ports_scanned}/{len(COMMON_PORTS)}")
 
 # Deep Scan Logic
 def get_banner(ip, port):
@@ -183,8 +213,12 @@ def deep_scan_processor():
             print(f"Error processing queue item: {e}")
 
 def main():
+    global start_time
     print(f"Starting advanced scan on {TARGET_IP}...")
     init_db()
+    start_time = time.time()
+    update_stat("status", "Scanning")
+    update_stat("scan_speed", "0 ports/sec")
 
     # Start deep scan processor
     processor_thread = threading.Thread(target=deep_scan_processor)
@@ -198,7 +232,15 @@ def main():
     scan_queue.put(None)
 
     print("Scanning finished. Waiting for analysis...")
+    update_stat("status", "Analyzing")
     processor_thread.join()
+
+    elapsed = time.time() - start_time
+    final_speed = int(len(COMMON_PORTS) / elapsed) if elapsed > 0 else 0
+    update_stat("scan_speed", f"{final_speed} ports/sec (Finished)")
+    update_stat("status", "Completed")
+    update_stat("progress", f"{len(COMMON_PORTS)}/{len(COMMON_PORTS)}")
+
     print("All done.")
 
 if __name__ == "__main__":
