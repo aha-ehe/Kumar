@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+redis
+elasticsearch
+celery
+websockets
+python-multipart
+passlib[bcrypt]
+python-jose[cryptography]
+pydantic
+requests

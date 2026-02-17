@@ -1,0 +1,6 @@
+celery[redis]
+elasticsearch
+python-geoip-geolite2
+requests
+geoip2
+msgpack
