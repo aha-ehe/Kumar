@@ -2,6 +2,7 @@ import http.server
 import socketserver
 import sqlite3
 import os
+import html
 
 PORT = 7890
 DB_NAME = "monitor.db"
@@ -13,7 +14,7 @@ class MonitorHandler(http.server.SimpleHTTPRequestHandler):
             self.send_header('Content-type', 'text/html')
             self.end_headers()
 
-            html = """
+            page_content = """
             <!DOCTYPE html>
             <html>
             <head>
@@ -48,29 +49,32 @@ class MonitorHandler(http.server.SimpleHTTPRequestHandler):
                 conn.close()
 
                 if not rows:
-                     html += "<tr><td colspan='5'>No scan results yet. Scanner is running...</td></tr>"
+                     page_content += "<tr><td colspan='5'>No scan results yet. Scanner is running...</td></tr>"
                 else:
                     for row in rows:
-                        html += f"""
+                        # Sanitize banner to prevent XSS
+                        banner_safe = html.escape(str(row[3]))
+
+                        page_content += f"""
                         <tr>
                             <td>{row[0]}</td>
                             <td>{row[1]}</td>
                             <td>{row[2]}</td>
-                            <td>{row[3]}</td>
+                            <td>{banner_safe}</td>
                             <td>{row[4]}</td>
                         </tr>
                         """
             except Exception as e:
-                html += f"<tr><td colspan='5'>Error reading database: {e}</td></tr>"
+                page_content += f"<tr><td colspan='5'>Error reading database: {e}</td></tr>"
 
-            html += """
+            page_content += """
                 </table>
                 <p>Auto-refreshing every 5 seconds...</p>
             </body>
             </html>
             """
 
-            self.wfile.write(html.encode())
+            self.wfile.write(page_content.encode())
         else:
             self.send_error(404, "File Not Found: %s" % self.path)
 

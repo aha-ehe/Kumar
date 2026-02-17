@@ -81,31 +81,21 @@ def get_banner(ip, port):
 
 def deep_scan_processor():
     while True:
-        # Wait until we have a batch or scan is done (simulated by timeout here for simplicity)
-        batch = []
         try:
-            # Block until at least one item
-            item = scan_queue.get(timeout=5)
-            batch.append(item)
-
-            # Try to get more up to BATCH_SIZE
-            while len(batch) < BATCH_SIZE:
-                try:
-                    item = scan_queue.get_nowait()
-                    batch.append(item)
-                except queue.Empty:
-                    break
-
-            print(f"[*] Processing batch of {len(batch)} items for Deep Scan...")
-            for ip, port in batch:
-                banner = get_banner(ip, port)
-                print(f"    -> {ip}:{port} Banner: {banner[:50]}...")
-                save_result(ip, port, banner)
+            item = scan_queue.get()
+            if item is None:
+                # Sentinel value received, exit loop
                 scan_queue.task_done()
+                break
 
-        except queue.Empty:
-            # If queue is empty for a while, we might be done
-            break
+            ip, port = item
+            print(f"[*] Processing {ip}:{port} for Deep Scan...")
+            banner = get_banner(ip, port)
+            print(f"    -> {ip}:{port} Banner: {banner[:50]}...")
+            save_result(ip, port, banner)
+            scan_queue.task_done()
+        except Exception as e:
+            print(f"Error processing queue item: {e}")
 
 def main():
     print(f"Starting scan on {TARGET_IP}...")
@@ -142,6 +132,9 @@ def main():
 
     for t in threads:
         t.join()
+
+    # Signal the processor to stop
+    scan_queue.put(None)
 
     print("Scanning threads finished. Waiting for deep scan to complete...")
     processor_thread.join()
