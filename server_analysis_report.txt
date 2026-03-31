@@ -1,0 +1,43 @@
+SERVER ANALYSIS REPORT
+======================
+Target: 36.88.105.236 (unira5)
+Date: 2024-02-17
+
+SUMMARY OF FINDINGS
+-------------------
+The server appears to be COMPROMISED. Several indicators of malicious activity and backdoors were found.
+
+1.  **Backdoors & Persistence:**
+    *   **Hidden SSH Service:** A secondary SSH daemon is configured to run on **Port 5674**, launched via a root cron job (`@reboot /usr/sbin/sshd -f /etc/ssh/sshd_config_secret`). This is a classic persistence mechanism.
+    *   **Bettercap Service:** `bettercap` (a network attack and monitoring tool) is running as a system service (`bettercap.service`). This is highly unusual for a production server and likely installed by an attacker to monitor traffic or launch further attacks.
+
+2.  **Webshell / Malware:**
+    *   **Confirmed Webshell:** A PHP file at `/var/www/html/cbt-master/uploads/foto_siswa/509897.php` contains code to execute shell commands (`shell_exec('whoami')`). This allows an attacker to execute arbitrary commands via the web server.
+    *   **Suspicious Scripts:** Python scripts `WinboxExploit.py` and `extract_user.py` were found in `/tmp` (and removed during the previous cleanup task), indicating the server was used to stage attacks against other targets (MikroTik Winbox).
+
+3.  **Running Services:**
+    *   **Web Server:** Apache2 with PHP-FPM (multiple versions: 7.2, 7.4, 8.2, 8.4).
+    *   **Database:** MariaDB.
+    *   **Webmin:** Running on port 10000.
+    *   **SSH:** Standard port 22 and the hidden port 5674.
+
+RECOMMENDATIONS
+---------------
+1.  **IMMEDIATE ACTION:**
+    *   Delete the webshell: `rm /var/www/html/cbt-master/uploads/foto_siswa/509897.php`.
+    *   Stop and disable the malicious Bettercap service: `systemctl stop bettercap && systemctl disable bettercap`.
+    *   Remove the hidden SSH cron job: Edit root's crontab (`crontab -e`) and remove the `@reboot` line pointing to `sshd_config_secret`.
+    *   Kill the hidden SSH process (pid 1160548, 1160522, etc. listening on 5674).
+    *   Delete the secret config: `rm /etc/ssh/sshd_config_secret`.
+
+2.  **Securing the Web Application:**
+    *   The `cbt-master` application allows uploading `.php` files to `uploads/foto_siswa/`. This is a critical vulnerability. Configure the web server to disable PHP execution in `uploads/` directories.
+
+3.  **General Hardening:**
+    *   Change all user passwords immediately (root, unira5, webmin users).
+    *   Implement a firewall (UFW) to block all ports except 22 (SSH), 80/443 (Web), and maybe 10000 (Webmin) if needed. Explicitly block 5674.
+    *   Review `authorized_keys` for all users.
+
+CAUTION
+-------
+Proceed with the cleanup carefully to avoid locking yourself out. Ensure you have a valid SSH session on port 22 before stopping the hidden service.
